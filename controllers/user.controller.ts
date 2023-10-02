@@ -10,7 +10,8 @@ import {
 	ActivationRequest,
 	EmailOptions,
 	LoginBody,
-	RegisterBody
+	RegisterBody,
+	SocialAuthBody
 } from '../utils/types';
 import { sendMail } from '../utils/sendMail';
 import { setCookies } from '../utils/auth/setCookie';
@@ -156,6 +157,22 @@ export const getUserInfo = asyncHandler(async (req: Request, res: Response, next
 			success: true,
 			data: user
 		});
+	} catch (error: any) {
+		throw new Error(error);
+	}
+});
+
+// social auth
+export const socialAuth = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
+	try {
+		const { email, name, avatar } = req.body as SocialAuthBody;
+		const user = await User.findOne({ email });
+		if (!user) {
+			const newUser = await User.create({ name, email, avatar }); //TODO: what about password
+			setCookies(newUser, 200, res);
+		} else {
+			setCookies(user, 200, res);
+		}
 	} catch (error: any) {
 		throw new Error(error);
 	}

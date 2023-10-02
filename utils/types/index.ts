@@ -34,3 +34,9 @@ export type CookieOptions = {
 	sameSite: 'lax' | 'strict' | 'none' | undefined;
 	secure?: boolean;
 };
+
+export type SocialAuthBody = {
+	email: string;
+	name: string;
+	avatar: string;
+};
