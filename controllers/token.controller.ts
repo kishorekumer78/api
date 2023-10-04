@@ -1,6 +1,5 @@
 import asyncHandler from 'express-async-handler';
 import { Request, Response, NextFunction } from 'express';
-import User, { IUser } from '../models/user.model';
 import { CustomError } from '../utils/CustomError';
 import jwt, { JwtPayload } from 'jsonwebtoken';
 import { redis } from '../db/redis';
@@ -35,6 +34,8 @@ export const updateAccessToken = asyncHandler(
 			const newRefreshToken = jwt.sign({ id: user._id }, process.env.REFRESH_TOKEN!, {
 				expiresIn: '3d'
 			});
+
+			//req.user = user; //TODO: Not required
 
 			// set cookies to response
 			res.cookie('access_token', newAccessToken, accessTokenOptions);

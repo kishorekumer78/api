@@ -40,3 +40,13 @@ export type SocialAuthBody = {
 	name: string;
 	avatar: string;
 };
+
+export type UserInfo = {
+	name?: string;
+	email?: string;
+};
+
+export type UpdatePasswordBody = {
+	oldPassword: string;
+	newPassword: string;
+};

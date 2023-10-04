@@ -1,158 +1,23 @@
 import asyncHandler from 'express-async-handler';
-import path from 'path';
 import { NextFunction, Request, Response } from 'express';
-import ejs from 'ejs';
+import { v2 as cloudinary } from 'cloudinary';
+
 // internal import
 import User from '../models/user.model';
-import { createActivationToken, decodeJwtToken } from '../utils/auth/jwt';
-import {
-	ActivationDetails,
-	ActivationRequest,
-	EmailOptions,
-	LoginBody,
-	RegisterBody,
-	SocialAuthBody
-} from '../utils/types';
-import { sendMail } from '../utils/sendMail';
-import { setCookies } from '../utils/auth/setCookie';
+import { UpdatePasswordBody, UserInfo } from '../utils/types';
 import { CustomError } from '../utils/CustomError';
 import { redis } from '../db/redis';
 import { getUserInfoSvc } from '../services/user.service';
-
-// User registration
-export const registerUser = asyncHandler(
-	async (req: Request, res: Response, next: NextFunction) => {
-		try {
-			const { name, email, password } = req.body;
-			// check user exists searching with email
-			const existingUser = await User.findOne({ email });
-			if (existingUser) {
-				throw new Error('User already exists');
-			}
-			const newUser: RegisterBody = {
-				name,
-				email,
-				password
-			};
-			const activationObj: ActivationDetails = createActivationToken(newUser);
-			const { activationCode } = activationObj;
-
-			const data = {
-				user: { name: newUser.name },
-				activationCode
-			};
-
-			await ejs.renderFile(path.join(__dirname, '../mails/activation-mail.ejs'), data);
-			const emailOptions: EmailOptions = {
-				email: newUser.email,
-				subject: 'Activate your account',
-				templateFileName: 'activation-mail.ejs',
-				data
-			};
-			await sendMail(emailOptions);
-			res.status(201).json({
-				success: true,
-				message: `Please check your your email ${newUser.email} to activate your account`,
-				data: { activationToken: activationObj.token }
-			});
-			/*
-			sample of decoded activation token{
-				user: {
-					name: 'John Doe',
-					email: 'johndoe@gmail.com',
-					password: 'Test@123'
-				},
-				activationCode: '1953',
-				iat: 1696101450,
-				exp: 1696101750
-			};
-			*/
-		} catch (error: any) {
-			throw new Error(error.message);
-		}
-	}
-);
-
-export const activateUser = asyncHandler(
-	async (req: Request, res: Response, next: NextFunction) => {
-		try {
-			const { activationCode, token } = req.body as ActivationRequest;
-			const decoded = decodeJwtToken(token);
-
-			if (decoded.activationCode !== activationCode) {
-				throw new Error('Invalid activation code');
-			}
-
-			const { name, email, password } = decoded.user;
-			const createdUser = await User.create({
-				name,
-				email,
-				password
-			});
-
-			res.status(201).json({
-				success: true,
-				message: 'User activated successfully',
-				data: createdUser.email
-			});
-		} catch (error: any) {
-			throw new Error(error);
-		}
-	}
-);
-
-// login user
-export const loginUser = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
-	try {
-		const { email, password } = req.body as LoginBody;
-
-		if (!email || !password) {
-			return next(new CustomError('Both email and password is required.', 400));
-		}
-
-		// Find user by email
-		const user = await User.findOne({ email }).select('+password');
-
-		// Check if user exists
-		if (!user) {
-			return next(new CustomError('Invalid credentials', 401));
-		}
-
-		// Check if password matches
-		const isMatch = await user.comparePassword(password);
-		if (!isMatch) {
-			return next(new CustomError('Password is incorrect', 401));
-		}
-
-		// Set access token and refresh token cookies and upload session to redis
-		setCookies(user, 200, res);
-	} catch (error: any) {
-		throw new Error(error);
-	}
-});
-
-// logout user
-export const logoutUser = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
-	// Clear access token and refresh token cookies and remove session from redis
-	try {
-		res.clearCookie('access_token');
-		res.clearCookie('refresh_token');
-		if (req.user?._id) {
-			await redis.del(req.user._id);
-		}
-
-		res.status(200).json({ success: true, message: 'Logged out successfully' });
-	} catch (error: any) {
-		throw new Error(error);
-	}
-});
-
+import { getPasswordLessUser } from '../utils/misc';
+// get user information
 export const getUserInfo = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
 	try {
 		const userId = req.user?._id;
 
 		const user = await getUserInfoSvc(userId);
-
+		if (!user) {
+			return next(new CustomError('User not found', 404));
+		}
 		res.status(200).json({
 			success: true,
 			data: user
@@ -162,18 +27,118 @@ export const getUserInfo = asyncHandler(async (req: Request, res: Response, next
 	}
 });
 
-// social auth
-export const socialAuth = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
-	try {
-		const { email, name, avatar } = req.body as SocialAuthBody;
-		const user = await User.findOne({ email });
-		if (!user) {
-			const newUser = await User.create({ name, email, avatar }); //TODO: what about password
-			setCookies(newUser, 200, res);
-		} else {
-			setCookies(user, 200, res);
+// update user info
+export const updateUserInfo = asyncHandler(
+	async (req: Request, res: Response, next: NextFunction) => {
+		try {
+			const userId = req.user?._id;
+			const { name, email } = req.body as UserInfo;
+
+			const user = await User.findById(userId);
+			if (!user) {
+				return next(new CustomError('User not found', 404));
+			}
+
+			if (email && email !== user.email) {
+				const existingUser = await User.findOne({ email });
+				if (existingUser) {
+					return next(new CustomError('Email already registered', 400));
+				}
+			}
+
+			user.name = name || user.name;
+			user.email = email || user.email;
+
+			const updatedUser = await user.save();
+
+			console.log(updatedUser);
+
+			await redis.set(userId, JSON.stringify(updatedUser));
+
+			res.status(200).json({
+				success: true,
+				data: updatedUser
+			});
+		} catch (error: any) {
+			throw new Error(error.message);
 		}
-	} catch (error: any) {
-		throw new Error(error);
 	}
-});
+);
+
+// update user password
+export const updatePassword = asyncHandler(
+	async (req: Request, res: Response, next: NextFunction) => {
+		try {
+			const { oldPassword, newPassword } = req.body as UpdatePasswordBody;
+			if (!oldPassword || !newPassword) {
+				return next(new CustomError('Please provide old and new password', 400));
+			}
+			const userId = req.user?._id;
+			// get user from db
+			const user = await User.findById(userId).select('+password');
+
+			if (!user) {
+				return next(new CustomError('User not found', 404));
+			}
+			// compare existing password with provided old password
+			const isPasswordMatch = await user.comparePassword(oldPassword);
+			if (!isPasswordMatch) {
+				return next(new CustomError('Please provide valid current password', 400));
+			}
+
+			// update password
+			user.password = newPassword;
+			const updatedUser = await user.save();
+			// as we are not saving password in redis, so no need to set it again in redis
+			res.status(200).json({
+				success: true,
+				message: 'Password updated successfully',
+				data: getPasswordLessUser(updatedUser)
+			});
+		} catch (error: any) {
+			throw new Error(error.message);
+		}
+	}
+);
+
+// update profile picture
+export const updateProfilePicture = asyncHandler(
+	async (req: Request, res: Response, next: NextFunction) => {
+		try {
+			const { avatar } = req.body; // file ??
+
+			const userId = req.user?._id;
+			const user = await User.findById(userId); //TODO: with out password check
+			if (!user) {
+				return next(new CustomError('User not found', 404));
+			}
+
+			if (user.avatar.public_id) {
+				// delete old image from cloudinary
+				await cloudinary.uploader.destroy(user.avatar.public_id);
+			}
+			const uploadDetails = await cloudinary.uploader.upload(avatar, {
+				folder: 'avatars',
+				width: 150,
+				height: 150,
+				quality: 'auto'
+			});
+			user.avatar = {
+				public_id: uploadDetails.public_id,
+				url: uploadDetails.secure_url
+			};
+
+			await user.save();
+			// update in redis
+			await redis.set(userId, JSON.stringify(user));
+
+			res.status(200).json({
+				success: true,
+				message: 'Profile picture updated successfully',
+				data: user
+			});
+		} catch (error: any) {
+			throw new Error(error.message);
+		}
+	}
+);
